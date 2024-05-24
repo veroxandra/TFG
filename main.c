@@ -50,35 +50,118 @@
 #define TRUE 1
 #define FALSE 0
 
-//Semaphores
-Tsemaphore distSem;
-Tsemaphore coorSem;
-Tsemaphore driverUARTSem;
-//Mutex
+/*Semaphores*/
+Tsemaphore distSem1;
+Tsemaphore distSem2;
+Tsemaphore coorSem1;
+Tsemaphore coorSem2;
+Tsemaphore floorSem1;
+Tsemaphore floorSem2;
+Tsemaphore driverUARTSem; //falta por plantear
+/*Mutex*/
 Tmutex distMutex;
 Tmutex coorMutex;
 Tmutex floorMutex;
-//Process
+
+typedef union{
+    unsigned int value;
+    float fvalue;
+}union_t;
+
+union_t distance_LiDAR;
+union_t distance_ultrasonic;
+union_t speed_coordinates;
+union_t actual_floor_distance;
+float safety_floor_distance;
+char E_Off;
+
+int id1, id2, id3;
+
+/*Perception Tasks*/
 void task_distance(){
     while(1){
-        wait(&distSem);
-        //dejar valor en PCD6
-        wait_servo_movement();
-        LiDAR();
-        ultrasonic();
+        wait(&distSem1);
+        wait_servo_movement();//dejar valor en PCD6
+        distance_ultrasonic.value = ultrasonic();
+        distance_LiDAR.value = LiDAR();
+        distance_ultrasonic.fvalue = data_conversion(distance_ultrasonic.value);
+        distance_LiDAR.fvalue = data_conversion(distance_LiDAR.value);
+        //evaluar con cual de la dos me quedo
+        move_servo();
+        mutex_lock(&distMutex);
+        //dejar en region critica
+        mutex_unlock(&distMutex);
+        signal(&distSem2);
     }
-
-
 }
-void task_floor(){}
-void task_coordinates(){}
+void task_floor(){
+    while(1){
+        wait(&floorSem1);
+        while(!E_Off){
+            actual_floor_distance.value = floor();
+            if(calculate_safety_distance(actual_floor_distance.fvalue, safety_floor_distance) <= 0){ //se ha puesto 0 como ejemplo, el valor puede ser otro
+                E_Off = TRUE;
+                //activar el pin de emergencia
+                signal(&floorSem2);
+                mutex_lock(&floorMutex);
+                //dejar mensaje en region critica
+                mutex_unlock(&floorMutex);
+            }else{
+                E_Off = FALSE;
+            }
+            delay_until();
+        }
+    }
+}
+void task_coordinates(){
+    while(1){
+        wait(&coorSem1);
+        speed_coordinates.value = coordinates();
+        speed_coordinates.fvalue = data_conversion(speed_coordinates.value);
+        mutex_lock(&coorMutex);
+        //dejar en region critica
+        mutex_unlock(&coorMutex);
+        signal(&coorSem2);
+    }
+}
+//task_driverUART
 
+/*Navigation Tasks*/
 
 /*
  * 
  */
 int main() {
-
+    int x;
     
+    //init_ports();
+    //init_clock_signal();
+    //init_adc();
+    //init_pwm();
+    //init_i2c();
+    //init_timer1(); //para el mk
+    //init_timer2(); //para el ultrasonidos
+    //init_uart2(); //para el lidar
+    //init_uart3(); //para comunicacion con control
+    //init_ultrasound_sensor();
+    
+    x = init_AuK(59.904E+6, 0.0002);
+    
+    if(x == 0){
+        id1 = create_task(__builtin_tblpage(task_distance),
+                          __builtin_tbloffset(task_distance), 100, 1);
+        id2 = create_task(__builtin_tblpage(task_floor),
+                          __builtin_tbloffset(task_floor), 100, 3);
+        id3 = create_task(__builtin_tblpage(task_coordinates),
+                          __builtin_tbloffset(task_coordinates), 100, 1);
+        
+        //navigation tasks
+        
+        start_AuK();
+    }
+    
+    Sleep();
+    return(0);
 }
 
+/*Interrupts*/
