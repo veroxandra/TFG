@@ -8,21 +8,30 @@
 #ifndef FUNCTIONS_H
 #define	FUNCTIONS_H
 
-int calculate_safety_distance(float actual_floor_distance, float safety_floor_distance){}
+#include "xc.h"
+#include <libpic30.h> /* Needed for __delay32 */
+#include <stdio.h>
+#include <p33EP512GM604.h>
 
-float data_conversion(unsigned int data){}
+int calculate_safety_distance(float actual_floor_distance, float safety_floor_distance);
 
-void wait_servo_movement(){}
+float data_conversion(unsigned int data);
 
-void move_servo(){}
+void wait_servo_movement();
 
-unsigned int LiDAR(){}
+void move_servo();
 
-unsigned int ultrasonic(){}
+unsigned int LiDAR();
 
-unsigned int coordinates(){}
+unsigned int ultrasonic();
 
-unsigned int floor(){}
+unsigned int coordinates();
+
+unsigned int floor();
+
+void run_ADC(int analog_pin);
+
+
 
 #endif	/* FUNCTIONS_H */
 
