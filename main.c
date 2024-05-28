@@ -46,6 +46,7 @@
 #include <p33EP512GM604.h>
 #include "AuK.h"
 #include "Functions.h"
+#include "Inits.h"
 
 #define TRUE 1
 #define FALSE 0
@@ -61,11 +62,12 @@ Tsemaphore driverUARTSem; //falta por plantear
 /*Mutex*/
 Tmutex distMutex;
 Tmutex coorMutex;
-Tmutex floorMutex;
+//Tmutex floorMutex;
 
 typedef union{
     unsigned int value;
     float fvalue;
+    char v[4];
 }union_t;
 
 union_t distance_LiDAR;
@@ -73,7 +75,8 @@ union_t distance_ultrasonic;
 union_t speed_coordinates;
 union_t actual_floor_distance;
 float safety_floor_distance;
-char E_Off;
+char E_Off, ignorar_LiDAR = TRUE;
+int degrees, echo_received, ADC_finished, ADC_result;
 
 int id1, id2, id3;
 
@@ -81,16 +84,25 @@ int id1, id2, id3;
 void task_distance(){
     while(1){
         wait(&distSem1);
-        wait_servo_movement();//dejar valor en PCD6
-        distance_ultrasonic.value = ultrasonic();
+        mutex_lock(&distMutex);//recoger valor region critica
+        degrees = PORTB; //saber si navegacion lo tiene que poner antes como salida
+        mutex_unlock(&distMutex);
+        move_servo(degrees);//dejar valor en PDC6
+        //distance_ultrasonic.value = ultrasonic();
+        send_ultrasonic_chirp();
+        ignorar_LiDAR = FALSE;
         distance_LiDAR.value = LiDAR();
-        distance_ultrasonic.fvalue = data_conversion(distance_ultrasonic.value);
+        //distance_ultrasonic.fvalue = data_conversion(distance_ultrasonic.value);
         distance_LiDAR.fvalue = data_conversion(distance_LiDAR.value);
         //evaluar con cual de la dos me quedo
-        move_servo();
-        mutex_lock(&distMutex);
-        //dejar en region critica
-        mutex_unlock(&distMutex);
+        degrees = 0;
+        move_servo(degrees);
+        for (int i = 0; i < 5; i++){
+            mutex_lock(&distMutex);//dejar en region critica
+            //dependiendo de cual me quedo
+            LATC = distance_LiDAR.v[i];
+            mutex_unlock(&distMutex);
+        }
         signal(&distSem2);
     }
 }
@@ -98,18 +110,20 @@ void task_floor(){
     while(1){
         wait(&floorSem1);
         while(!E_Off){
-            actual_floor_distance.value = floor();
-            if(calculate_safety_distance(actual_floor_distance.fvalue, safety_floor_distance) <= 0){ //se ha puesto 0 como ejemplo, el valor puede ser otro
-                E_Off = TRUE;
-                //activar el pin de emergencia
-                signal(&floorSem2);
-                mutex_lock(&floorMutex);
-                //dejar mensaje en region critica
-                mutex_unlock(&floorMutex);
-            }else{
-                E_Off = FALSE;
+            for(int i = 0; i < 4; i++){
+                actual_floor_distance.value = floor(i);
+                if(calculate_safety_distance(actual_floor_distance.fvalue, safety_floor_distance) <= 0){ //se ha puesto 0 como ejemplo, el valor puede ser otro
+                    E_Off = TRUE;
+                    //activar el pin de emergencia
+                    signal(&floorSem2);
+                    /*mutex_lock(&floorMutex);
+                    //dejar mensaje en region critica
+                    mutex_unlock(&floorMutex);*/
+                }else{
+                    E_Off = FALSE;
+                }
             }
-            delay_until();
+            delay_until(0);//periodo de comprobacion
         }
     }
 }
@@ -118,9 +132,11 @@ void task_coordinates(){
         wait(&coorSem1);
         speed_coordinates.value = coordinates();
         speed_coordinates.fvalue = data_conversion(speed_coordinates.value);
-        mutex_lock(&coorMutex);
-        //dejar en region critica
-        mutex_unlock(&coorMutex);
+        for(int i = 0; i < 5; i++){
+            mutex_lock(&coorMutex);
+            LATC = speed_coordinates.v[i];
+            mutex_unlock(&coorMutex);
+        }
         signal(&coorSem2);
     }
 }
@@ -128,22 +144,33 @@ void task_coordinates(){
 
 /*Navigation Tasks*/
 
+
+void send_ultrasonic_chirp(void)
+{
+    echo_received = PORTAbits.RA7; // Interrupt on change armed
+    echo_received = FALSE;
+    TMR2 = 0;
+    T2CONbits.TON = 1;
+    PORTAbits.RA10 = 1; //Set init
+    IEC1bits.CNIE = 1; //Enable interrupt on change of echo bit
+}
+
+
+
 /*
  * 
  */
 int main() {
     int x;
     
-    //init_ports();
-    //init_clock_signal();
-    //init_adc();
-    //init_pwm();
+    init_clock_signal();
+    init_ports();
+    init_adc();
+    init_pwm();
     //init_i2c();
-    //init_timer1(); //para el mk
-    //init_timer2(); //para el ultrasonidos
-    //init_uart2(); //para el lidar
-    //init_uart3(); //para comunicacion con control
-    //init_ultrasound_sensor();
+    init_uart2(); //para el lidar
+    //init_uart1(); //para comunicacion con control
+    init_ultrasound_sensor();
     
     x = init_AuK(59.904E+6, 0.0002);
     
@@ -165,3 +192,46 @@ int main() {
 }
 
 /*Interrupts*/
+
+void __attribute__((__interrupt__, no_auto_psv)) _CNInterrupt (void)
+{
+    echo_received = PORTAbits.RA7;
+    if(echo_received)
+    {
+        // 344 ms
+        // a TMR2 count is equal to 1.47 mm. => 2 TMR2 count are almost 3 mm
+        // Then divide by 2 and multiply by 3
+        distance_ultrasonic.value = TMR2;
+        // ultrasonic_distance /= 2;
+        distance_ultrasonic.value >>= 1;
+        distance_ultrasonic.value *= 3;
+        // This is the distance of the full travel 
+        // (robot to obstacle + obstacle to robot).
+        // It is needed to be divided by 2
+        // ultrasonic_distance /= 2;
+        distance_ultrasonic.value >>= 1;
+        // An to offer distance in meters
+        distance_ultrasonic.fvalue = distance_ultrasonic.fvalue / 1000.0;
+        IEC1bits.CNIE = 0; //Disable interrupt on change of echo pin.
+        T2CONbits.TON = 0;
+        TMR2 = 0;
+        PORTAbits.RA10 = 0; // Unset init
+    }
+    IFS1bits.CNIF = 0;
+}
+void __attribute__((__interrupt__, no_auto_psv)) _T2Interrupt (void)
+{
+    distance_ultrasonic.value = 0xFFFF;
+    IEC1bits.CNIE = 0; //Disable interrupt on change of echo pin.
+    T2CONbits.TON = 0;
+    TMR2 = 0;
+    PORTAbits.RA10 = 0; // Unset init
+    
+    IFS0bits.T2IF = 0;
+}
+void __attribute__((__interrupt__, no_auto_psv)) _AD1Interrupt(void)
+{
+    ADC_finished = TRUE;
+    ADC_result = ADC1BUF0;
+    IFS0bits.AD1IF = 0;
+}
