@@ -1,5 +1,7 @@
 #include "Inits.h"
 
+#define I2C_BAUDRATE 100000 
+
 void init_ports(){
     
     ANSELB = 0;
@@ -13,7 +15,7 @@ void init_clock_signal(){
     RCONbits.SWDTEN = 0; // Disable Watchdog Timer
 
     // This chip is taged with I-Temp stamp (-I/SP) then the temperature range
-    // is -40ÂºC to 85ÂºC which implies a maximum of 70 MIPS (Fosc = 140 MHz)
+    // is -40ºC to 85ºC which implies a maximum of 70 MIPS (Fosc = 140 MHz)
     // Chapter 33.1 DC characteristics in dsPIC33EP512GM604 manual.
     
     // We take a conservative configuration
@@ -171,7 +173,25 @@ void init_pwm(){
 }
 
 void init_i2c(){
-    
+     // Calcular el valor del baudrate
+    uint16_t baudrate = (59.904 / (2 * I2C_BAUDRATE)) - 1;
+
+    // Configurar los pines de I2C
+    TRISBbits.TRISB8 = 1;  // SCL1 como entrada
+    TRISBbits.TRISB9 = 1;  // SDA1 como entrada
+
+    // Deshabilitar el módulo I2C antes de configurarlo
+    I2C1CONbits.I2CEN = 0;
+
+    // Configurar el baudrate
+    I2C1BRG = baudrate;
+
+    // Configurar otros parámetros de control
+    I2C1CONbits.DISSLW = 1;  // Deshabilitar la entrada lenta
+    I2C1CONbits.SMEN = 0;    // Deshabilitar el filtrado de señales
+
+    // Habilitar el módulo I2C
+    I2C1CONbits.I2CEN = 1;
 }
 
 void init_uart2(){ //para el lidar
@@ -219,7 +239,48 @@ void init_uart2(){ //para el lidar
 }
 
 void init_uart1(){ //para comunicacion con control
+        /* Specified pins for UART1 */
     
+    /* RX RP48 */
+    RPINR18bits.U1RXR = 0b0110000; 
+    TRISCbits.TRISC0 = 1;
+    
+    /* TX RP49 */
+    RPOR5bits.RP49R = 0b000001;
+    TRISCbits.TRISC1 = 0;
+    
+    
+    /* Configure UART */
+    U1MODEbits.USIDL = 1;   // Stop on idle mode
+    U1MODEbits.IREN = 0;    // disable IrDA operation
+    U1MODEbits.UEN = 0;     // Only RX and TX are used (non CTS, RTS and BCLK)
+    U1MODEbits.WAKE = 0;    // Wake up on start bit is disabled
+    U1MODEbits.LPBACK = 0;  // Loopback mode disabled
+    U1MODEbits.ABAUD = 0;   // Baud rate measurement disabled
+    U1MODEbits.URXINV = 0;  // Non polarity inversion. Idle state is 1
+    U1MODEbits.BRGH = 0;    // High baud rate disabled
+    U1MODEbits.PDSEL = 0;   // 8 bit data with no parity
+    U1MODEbits.STSEL = 0;   // One stop bit.
+    
+    
+    U1STAbits.URXISEL = 0;  // Interrupt on each character received
+    
+    // U1BRG = (Fcy/(16*Baud_rate) -1)
+    U1BRG = 32;            // For 9600 bauds (119.808/2 MHz)/(16*9600) - 1
+    
+    /* Configure interrupts */
+    IPC2bits.U1RXIP = 2;
+    IFS0bits.U1RXIF= 0;
+    IEC0bits.U1RXIE = 0;
+    
+    U1MODEbits.UARTEN = 1; // Enable UART operation
+    U1STAbits.UTXEN = 1;    // Enable uart1 TX (must be done after UARTEN)
+    
+    /* It is needed to wait one transmision bit to ensure start bit detection 
+     When 9600 Baud rate is selected it is necessary to wait 104 us */
+    //__delay32(104);
+    
+    __C30_UART = 1; // Redirects printf output to UART1
 }
 
 void init_ultrasound_sensor(){

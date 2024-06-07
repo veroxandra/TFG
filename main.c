@@ -51,6 +51,8 @@
 #define TRUE 1
 #define FALSE 0
 
+#define BNO055_I2C_ADDRESS 0x28 //cambiar segun la direccion
+
 /*Semaphores*/
 Tsemaphore distSem1;
 Tsemaphore distSem2;
@@ -58,7 +60,7 @@ Tsemaphore coorSem1;
 Tsemaphore coorSem2;
 Tsemaphore floorSem1;
 Tsemaphore floorSem2;
-Tsemaphore driverUARTSem; //falta por plantear
+Tsemaphore driverUARTSem; 
 /*Mutex*/
 Tmutex distMutex;
 Tmutex coorMutex;
@@ -72,49 +74,61 @@ typedef union{
 
 union_t distance_LiDAR;
 union_t distance_ultrasonic;
-union_t speed_coordinates;
 union_t actual_floor_distance;
-float safety_floor_distance;
-char E_Off, ignorar_LiDAR = TRUE;
+float safety_floor_distance, distance;
+char E_Off, ignorar_LiDAR, data, state, coorValues[6];
 int degrees, echo_received, ADC_finished, ADC_result;
+unsigned int Low_data, High_data;
 
-int id1, id2, id3;
+int id1, id2, id3, id4;
 
 /*Perception Tasks*/
 void task_distance(){
     while(1){
+        ignorar_LiDAR = TRUE;
         wait(&distSem1);
-        mutex_lock(&distMutex);//recoger valor region critica
+        /*mutex_lock(&distMutex);//recoger valor region critica
         degrees = PORTB; //saber si navegacion lo tiene que poner antes como salida
-        mutex_unlock(&distMutex);
+        mutex_unlock(&distMutex);*/
         move_servo(degrees);//dejar valor en PDC6
         //distance_ultrasonic.value = ultrasonic();
-        send_ultrasonic_chirp();
+        send_ultrasonic_chirp(); //revisar cuanto tarda
         ignorar_LiDAR = FALSE;
-        distance_LiDAR.value = LiDAR();
+        //distance_LiDAR.value = LiDAR();
         //distance_ultrasonic.fvalue = data_conversion(distance_ultrasonic.value);
-        distance_LiDAR.fvalue = data_conversion(distance_LiDAR.value);
+        distance_LiDAR.fvalue = (float)distance_LiDAR.value / 100.0; //in meters
         //evaluar con cual de la dos me quedo
+        if(distance_ultrasonic.fvalue < distance_LiDAR.fvalue){
+            distance = distance_LiDAR.fvalue;
+        }else{
+            distance = distance_ultrasonic.fvalue;
+        }
         degrees = 0;
         move_servo(degrees);
-        for (int i = 0; i < 5; i++){
+        /*for (int i = 0; i < 5; i++){
             mutex_lock(&distMutex);//dejar en region critica
             //dependiendo de cual me quedo
             LATC = distance_LiDAR.v[i];
             mutex_unlock(&distMutex);
-        }
+        }*/
         signal(&distSem2);
     }
 }
+
 void task_floor(){
     while(1){
         wait(&floorSem1);
         while(!E_Off){
+            unsigned long wake_up_time, task_period;
+            task_period = 1; // 0.2 ms, revisar esto
+            wake_up_time = clock();
             for(int i = 0; i < 4; i++){
                 actual_floor_distance.value = floor(i);
-                if(calculate_safety_distance(actual_floor_distance.fvalue, safety_floor_distance) <= 0){ //se ha puesto 0 como ejemplo, el valor puede ser otro
+                if((safety_floor_distance - actual_floor_distance.fvalue) >= 0.05 ){ //se ha puesto 0.5 como ejemplo, el valor puede ser otro
                     E_Off = TRUE;
                     //activar el pin de emergencia
+                    //pin 44 y RB8
+                    //Resgistro: RPOR3 (pág 171 del pic)
                     signal(&floorSem2);
                     /*mutex_lock(&floorMutex);
                     //dejar mensaje en region critica
@@ -123,27 +137,67 @@ void task_floor(){
                     E_Off = FALSE;
                 }
             }
-            delay_until(0);//periodo de comprobacion
+            wake_up_time += task_period;
+            delay_until(wake_up_time);//periodo de comprobacion
         }
     }
 }
+
 void task_coordinates(){
     while(1){
         wait(&coorSem1);
-        speed_coordinates.value = coordinates();
-        speed_coordinates.fvalue = data_conversion(speed_coordinates.value);
-        for(int i = 0; i < 5; i++){
+        
+        char buffer[6];
+        
+        coordinates(BNO055_I2C_ADDRESS, 0x28, &buffer, 6);
+        
+        coorValues[0] = (buffer[1] << 8) | buffer[0]; //accel_x
+        coorValues[1] = (buffer[3] << 8) | buffer[2]; //accel_y
+        coorValues[2] = (buffer[5] << 8) | buffer[4]; //accel_z
+        
+        coordinates(BNO055_I2C_ADDRESS, 0x14, &buffer, 6);
+        
+        coorValues[3] = (buffer[1] << 8) | buffer[0]; //gyro_x
+        coorValues[4] = (buffer[3] << 8) | buffer[2]; //gyro_y
+        coorValues[5] = (buffer[5] << 8) | buffer[4]; //gyro_z
+
+        
+        // Leer un byte del dispositivo esclavo
+        //speed_coordinates.value = coordinates(slave_address, register_address);
+        //speed_coordinates.fvalue = data_conversion(speed_coordinates.value);
+        /*for(int i = 0; i < 7; i++){
             mutex_lock(&coorMutex);
-            LATC = speed_coordinates.v[i];
+            LATC = coorValues[i];
             mutex_unlock(&coorMutex);
-        }
+        }*/
         signal(&coorSem2);
     }
 }
-//task_driverUART
+
+void task_driverUART(){
+    while(1){
+        wait_within_driver(&driverUARTSem, IEC1, 14);
+        switch(state){
+            case 0: 
+                Low_data = (unsigned int)data;
+                state = 1;
+                break;
+            case 1:
+                High_data = (unsigned int)data;
+                distance_LiDAR.value = High_data << 8;
+                distance_LiDAR.value |= Low_data;                
+                state = 2;
+                break;
+            case 2:
+                state = 0;
+                signal(&driverUARTSem); //esto no lo termino de pillar
+                break;  
+        }
+    }
+    
+}
 
 /*Navigation Tasks*/
-
 
 void send_ultrasonic_chirp(void)
 {
@@ -155,11 +209,6 @@ void send_ultrasonic_chirp(void)
     IEC1bits.CNIE = 1; //Enable interrupt on change of echo bit
 }
 
-
-
-/*
- * 
- */
 int main() {
     int x;
     
@@ -167,7 +216,7 @@ int main() {
     init_ports();
     init_adc();
     init_pwm();
-    //init_i2c();
+    init_i2c();
     init_uart2(); //para el lidar
     //init_uart1(); //para comunicacion con control
     init_ultrasound_sensor();
@@ -181,7 +230,8 @@ int main() {
                           __builtin_tbloffset(task_floor), 100, 3);
         id3 = create_task(__builtin_tblpage(task_coordinates),
                           __builtin_tbloffset(task_coordinates), 100, 1);
-        
+        id4 = create_task(__builtin_tblpage(task_driverUART),
+                          __builtin_tbloffset(task_driverUART), 100, 1);
         //navigation tasks
         
         start_AuK();
@@ -219,6 +269,7 @@ void __attribute__((__interrupt__, no_auto_psv)) _CNInterrupt (void)
     }
     IFS1bits.CNIF = 0;
 }
+
 void __attribute__((__interrupt__, no_auto_psv)) _T2Interrupt (void)
 {
     distance_ultrasonic.value = 0xFFFF;
@@ -229,9 +280,67 @@ void __attribute__((__interrupt__, no_auto_psv)) _T2Interrupt (void)
     
     IFS0bits.T2IF = 0;
 }
+
 void __attribute__((__interrupt__, no_auto_psv)) _AD1Interrupt(void)
 {
     ADC_finished = TRUE;
     ADC_result = ADC1BUF0;
     IFS0bits.AD1IF = 0;
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _U2RXInterrupt (void)
+{
+    data = U2RXREG;
+    
+    if(!ignorar_LiDAR){
+        data = U2RXREG;
+        if(data == 0x59){
+            data = U2RXREG;
+            IEC1bits.U2RXIE = 0;
+            IFS1bits.U2RXIF = 0;
+            signal(&driverUARTSem);
+        }
+    }
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _OscillatorFail(void) {
+    INTCON1bits.OSCFAIL = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _AddressError(void) {
+    INTCON1bits.ADDRERR = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _HardTrapError(void) {
+    INTCON1bits.ADDRERR = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _StackError(void) {
+    INTCON1bits.STKERR = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _MathError(void) {
+    INTCON1bits.MATHERR = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _DMACError(void) {
+    INTCON3bits.DAE = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
+}
+
+void __attribute__((__interrupt__, no_auto_psv)) _SoftTrapError(void) {
+    INTCON4bits.SGHT = 0;
+    PORTAbits.RA1 = 1;
+    while(1);
 }
