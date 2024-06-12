@@ -8,11 +8,17 @@
 #ifndef INITS_H
 #define	INITS_H
 
+#include "xc.h"
+#include <libpic30.h> /* Needed for __delay32 */
+#include <stdio.h>
+#include <p33EP512GM604.h>
+
 void init_ports();
 void init_clock_signal();
 void init_adc();
 void init_pwm();
 void init_i2c();
+void init_maps();
 void init_timer1(); //para el mk
 void init_timer2(); //para el ultrasonidos
 void init_uart2(); //para el lidar

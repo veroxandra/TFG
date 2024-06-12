@@ -47,6 +47,12 @@
 #include "AuK.h"
 #include "Functions.h"
 #include "Inits.h"
+#include "Topo_Map.h"
+#include "Metric_Map.h"
+#include "Route_Planning.h"
+#include "Perception_Connection.h"
+#include "Control_Connection.h"
+#include "Map_Management.h"
 
 #define TRUE 1
 #define FALSE 0
@@ -61,6 +67,9 @@ Tsemaphore coorSem2;
 Tsemaphore floorSem1;
 Tsemaphore floorSem2;
 Tsemaphore driverUARTSem; 
+Tsemaphore topo_map_semaphore;
+Tsemaphore metric_map_semaphore;
+Tsemaphore velocity_calc_semaphore;
 /*Mutex*/
 Tmutex distMutex;
 Tmutex coorMutex;
@@ -80,7 +89,7 @@ char E_Off, ignorar_LiDAR, data, state, coorValues[6];
 int degrees, echo_received, ADC_finished, ADC_result;
 unsigned int Low_data, High_data;
 
-int id1, id2, id3, id4;
+int id1, id2, id3, id4, in1, in2, in3, in4;
 
 /*Perception Tasks*/
 void task_distance(){
@@ -197,8 +206,6 @@ void task_driverUART(){
     
 }
 
-/*Navigation Tasks*/
-
 void send_ultrasonic_chirp(void)
 {
     echo_received = PORTAbits.RA7; // Interrupt on change armed
@@ -207,6 +214,37 @@ void send_ultrasonic_chirp(void)
     T2CONbits.TON = 1;
     PORTAbits.RA10 = 1; //Set init
     IEC1bits.CNIE = 1; //Enable interrupt on change of echo bit
+}
+
+/*Navigation Tasks*/
+void task_topological_map() {
+    while (1) {
+        wait(&topo_map_semaphore);
+        a_star_topological(4, 6);  // Ejecuta el algoritmo A* en el mapa topológico
+        signal(&metric_map_semaphore);  // Desbloquea la tarea del mapa métrico
+    }
+}
+
+void task_metric_map() {
+    while (1) {
+        wait(&metric_map_semaphore);
+        a_star_metric();  // Ejecuta el algoritmo A* en el mapa métrico usando final_path del topológico
+        signal(&velocity_calc_semaphore);  // Desbloquea la tarea de cálculo de velocidades
+    }
+}
+
+void task_velocity_calculation() {
+    while (1) {
+        wait(&velocity_calc_semaphore);
+        calculate_velocity();  // Calcula las velocidades angular y lineal
+        signal(&topo_map_semaphore);  // Desbloquea la tarea del mapa topológico para el siguiente ciclo
+    }
+}
+
+void task_update_map() {
+    while (1) {
+        update_map_with_sensor_data();  // Actualiza el mapa métrico con los datos de los sensores
+    }
 }
 
 int main() {
@@ -218,8 +256,13 @@ int main() {
     init_pwm();
     init_i2c();
     init_uart2(); //para el lidar
-    //init_uart1(); //para comunicacion con control
+    init_uart1(); //para comunicacion con control
     init_ultrasound_sensor();
+    
+    // Inicializa semáforos
+    init_semaphore(&topo_map_semaphore, 0);  
+    init_semaphore(&metric_map_semaphore, 0);
+    init_semaphore(&velocity_calc_semaphore, 0);
     
     x = init_AuK(59.904E+6, 0.0002);
     
@@ -233,8 +276,17 @@ int main() {
         id4 = create_task(__builtin_tblpage(task_driverUART),
                           __builtin_tbloffset(task_driverUART), 100, 1);
         //navigation tasks
-        
+        in1 = create_task(__builtin_tblpage(task_topological_map),
+                          __builtin_tbloffset(task_topological_map), 100, 1);
+        in2 = create_task(__builtin_tblpage(task_metric_map),
+                          __builtin_tbloffset(task_metric_map), 100, 2);
+        in3 = create_task(__builtin_tblpage(task_velocity_calculation),
+                          __builtin_tbloffset(task_velocity_calculation), 100, 3);
+        in4 = create_task(__builtin_tblpage(task_update_map),
+                          __builtin_tbloffset(task_update_map), 100, 4);
         start_AuK();
+        
+        signal(&topo_map_semaphore);  // Inicia la primera tarea
     }
     
     Sleep();

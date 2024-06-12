@@ -1,4 +1,6 @@
 #include "Inits.h"
+#include "Topo_Map.h"
+#include "Metric_Map.h"
 
 #define I2C_BAUDRATE 100000 
 
@@ -194,6 +196,10 @@ void init_i2c(){
     I2C1CONbits.I2CEN = 1;
 }
 
+void init_maps(void) {
+    init_topo_map();
+    init_metric_map();
+}
 void init_uart2(){ //para el lidar
     /* Specified pins for UART2 */
     
